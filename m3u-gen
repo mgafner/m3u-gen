@@ -1,0 +1,266 @@
+#!/bin/bash
+#
+# This file is part of m3u-gen
+# https://github.com/mgafner/m3u-gen
+#
+# m3u-gen is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# m3u-gen is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with m3u-gen.  If not, see <http://www.gnu.org/licenses/>.
+
+# -----------------------------------------------------------------------------
+# Program Settings
+# TODO: put into config file and read in below
+MUSIC_DIR="/home/mgafner/Music"
+PLAYLIST_DIR="/home/mgafner/Music/_playlists"
+DEBUG=0 
+
+# -----------------------------------------------------------------------------
+logger()
+{
+  if [[ "$DEBUG" == "1" ]]; then
+    echo "$1"
+  fi
+}
+
+
+# check requirements
+# -----------------------------------------------------------------------------
+ # declare -A for associative arrays needs at least bash version 4
+ # check for needed binaries
+ # eyeD3 grep sed awk
+
+# load config
+# -----------------------------------------------------------------------------
+i=0
+k=0
+
+if [[ ! -f rules ]]; then
+  echo "needs a rules-file in current directory"
+  exit 1
+fi
+
+while IFS='= ' read config setting
+do
+  case $config in
+    # \#*)
+      # skip comments
+      # ;;
+    \[*])
+      section=$(echo $config | sed -e 's/\[//g' -e 's/\]//g')
+      sections[i]=$section 
+      ((i++))
+    ;;
+    \{*\})
+      specialsection=$(echo $config | sed -e 's/\{//g' -e 's/\}//g')
+      specialsections[k]=$specialsection 
+      ((k++))
+      # prepare anyway a section for specialsections, so the settings will be saved there
+      sections[i]=$specialsection 
+      ((i++))
+    ;;
+    exclude_tags)
+      # declare an array variable with the name of the config ("exclude_tags" here)
+      # the array index is defined from the section btw from the tag
+      # this way we can recall every setting for a tag through its tag-identifier
+
+      # exclude_tags[$section]=$setting
+      # echo config $config of $section is ${exclude_tags[$section]}
+
+      # nice would be something like this:
+      # declare "${config[$section]}=$setting"
+      # echo config $config of $section is ${config[section]}
+      declare -A "$config[$section]=$setting"
+      # option -A for associative arrays, needs at least bash version 4
+    ;;
+    exclude_ratings)
+      declare -A "$config[$section]=$setting"
+    ;;
+    exclude_artists)
+      declare -A "$config[$section]=$setting"
+    ;;
+    include_tags)
+      declare -A "$config[$section]=$setting"
+    ;;
+    include_ratings)
+      declare -A "$config[$section]=$setting"
+    ;;
+    include_artists)
+      declare -A "$config[$section]=$setting"
+    ;;
+    action_tag_comments_remove)
+      declare -A "$config[$section]=$setting"
+    ;;
+    action_tag_comments_add)
+      declare -A "$config[$section]=$setting"
+    ;;
+    *)
+      # echo anything else: $config
+    ;;
+  esac
+done < rules
+
+# Show Summary
+# -----------------------------------------------------------------------------
+show_summary()
+{
+echo "total sections: ${#sections[@]}"
+echo "section item array: ${sections[@]}"
+
+echo "total configs in exclude_tags: ${#exclude_tags[@]}"
+echo "exclude_tags item array: ${exclude_tags[@]}"
+}
+
+# Show Details
+# -----------------------------------------------------------------------------
+show_details()
+{
+for (( i=0; i<${#sections[@]}; i++ ))
+do
+  section=${sections[i]}
+  echo -----------------
+  echo Section: $section
+  echo -----------------
+  if [[ ! -z ${exclude_tags[$section]} ]]; then 
+    echo exclude tags: ${exclude_tags[$section]}
+  fi
+  if [[ ! -z ${exclude_ratings[$section]} ]]; then 
+    echo exclude ratings: ${exclude_ratings[$section]}
+  fi
+  if [[ ! -z ${exclude_artists[$section]} ]]; then 
+    echo exclude artists: ${exclude_artists[$section]}
+  fi
+  if [[ ! -z ${include_tags[$section]} ]]; then 
+    echo include tags: ${include_tags[$section]}
+  fi
+  if [[ ! -z ${include_ratings[$section]} ]]; then 
+    echo include ratings: ${include_ratings[$section]}
+  fi
+  if [[ ! -z ${include_artists[$section]} ]]; then 
+    echo include artists: ${include_artists[$section]}
+  fi
+  if [[ ! -z ${action_tag_comments_remove[$section]} ]]; then 
+    echo action tag comments remove: ${action_tag_comments_remove[$section]}
+  fi
+  if [[ ! -z ${action_tag_comments_add[$section]} ]]; then 
+    echo action tag comments add: ${action_tag_comments_add[$section]}
+  fi
+done
+}
+
+# Main Loop
+# -----------------------------------------------------------------------------
+
+# TODO_1: read mpd config and decide if we should remove basedir or not
+#
+#check if MUSIC_DIR already has a trailing "/". if not, then add one.
+length=$((${#MUSIC_DIR}-1))
+trailingchar=${MUSIC_DIR:$length:1}
+if [ "$trailingchar" != "/" ]; then
+  MUSIC_DIR="$MUSIC_DIR/" 
+fi
+#
+# standard configuration of mpd saves playlist without base dir (MUSIC_DIR)
+# so we remove part of MUSIC_DIR from filenames
+basedir=$(echo $MUSIC_DIR | sed -e 's/\//\\\//g' -e 's/ /\\ /g' -e 's/\-/\\\-/g')
+
+# TODO_2: only show progress if user is asking for (command line option)
+echo "preparing..."
+allfiles=$(find $MUSIC_DIR -name *.mp3 | wc -l)
+echo "creating Playlists for $allfiles mp3-Files"
+donefiles=0
+
+find $MUSIC_DIR -name *.mp3 | 
+while read filename
+do
+  tags=$(eyeD3 --no-color --log-level=error "$filename" | awk '/Comment: /{getline; print}')
+  tags=$(echo $tags | sed -e 's/; /;/g' -e 's/ /_/g' -e 's/;/ /g')
+  rating=$(eyeD3 --no-color --log-level=error "$filename" | awk '/FMPS_Rating]/{getline; print}')
+  artist=$(eyeD3 --no-color --log-level=error "$filename" | grep "artist" | sed -e 's/.*artist. //g')
+  if [ ! -z "$rating" ]; then
+    rating=$(echo -e "scale=0; $rating * 5" | bc)
+    #show rating as integer:
+    rating=$(echo -e ${rating%.*})
+  fi
+
+  # TODO_1: read mpd config and decide if we should remove basedir or not
+  filename=$(echo $filename | sed -e "s/$basedir//g")
+  echo "-------------------------------------------"
+  echo "song: $filename"
+  echo "tags: $tags"
+
+  # create playlists for all tags out of the mp3 comment field
+  # using the rules from the rules file
+  # rules in [ and ] sections which are named of tags
+  for tag in $tags
+  do
+    # normally include song in playlist as it is tagged
+    include=1 
+
+    # evaluate the rules and decide if songs has to be excluded or included to a playlist
+    # check if song has to be excluded because of other tags
+    for exclude_tag in $tags
+    do
+      if [[ ! -z ${exclude_tags[$tag]} ]] && [[ ${exclude_tags[$tag]} =~ $exclude_tag ]] ; then
+        logger "$tag: tag ""$exclude_tag"" is in excludes (${exclude_tags[$tag]}) -> exclude song"
+        include=0
+      fi
+    done
+
+    # check if song has to be excluded because of rating
+    if [[ ! -z ${exclude_ratings[$tag]} ]] && [[ $rating =~ ^[${exclude_ratings[$tag]}]$ ]]; then
+      logger "$tag: rating of $rating is in rating excludes (${exclude_ratings[$tag]}) -> exclude song"
+      include=0
+    fi
+
+    # check if song has to be excluded because of artists
+    if [[ ! -z ${exclude_artists[$tag]} ]] && [[ ${exclude_artists[$tag]} =~ $artist ]]; then
+      logger "$tag: artist ""$artist"" is in artists excludes (${exclude_artists[$tag]}) -> exclude song"
+      include=0
+    fi
+
+    # check if song has to be included because of other tags
+    for include_tag in $tags
+    do
+      if [[ ! -z ${include_tags[$tag]} ]] && [[ ${include_tags[$tag]} =~ $include_tag ]] ; then
+        logger "$tag: tag ""$include_tag"" is in includes (${include_tags[$tag]}) -> include song"
+        include=1
+      fi
+    done
+    
+    # check if song has to be included because of rating
+    if [[ ! -z ${include_ratings[$tag]} ]] && [[ $rating =~ ^[${include_ratings[$tag]}]$ ]]; then
+      logger "$tag: rating of $rating is in rating includes (${include_ratings[$tag]}) -> include song"
+      include=1
+    fi
+
+    # check if song has to be included because of artists
+    if [[ ! -z ${include_artists[$tag]} ]] && [[ ${include_artists[$tag]} =~ $artist ]]; then
+      logger "$tag: artist ""$artist"" is in artists includes (${include_artists[$tag]}) -> include song"
+      include=1
+    fi
+
+    # finally do the action, write the song to the playlist if it may be included
+    if [[ $include == 1 ]]; then
+      echo "added to "$tag
+      echo "$filename" >> "$PLAYLIST_DIR/$tag".m3u
+    else
+      echo "excluded from "$tag
+    fi
+  done
+
+  # TODO_2: only show progress if user is asking for (command line option)
+  donefiles=$((donefiles + 1))
+
+  echo "done: $donefiles/$allfiles"
+done
+
+
